@@ -3,40 +3,33 @@ from torch import nn
 from torch.nn import functional as F
 from torch import Tensor
 
-from torchvision.datasets import OxfordIIITPet
-from torchvision.transforms import Resize, Compose, ToTensor
-from torchvision.transforms.functional import to_pil_image
-
 import matplotlib.pyplot as plt
 from random import random
 
 from einops.layers.torch import Rearrange
 from einops import repeat
 
-to_tensor = [Resize((144, 144)), ToTensor()]
+from dataPreprocessing import dataset, train_dataloader, test_dataloader
 
-class Compose(object):
-    def __init__(self, transforms):
-        self.transforms = transforms
-    
-    def __call__(self, image, target=None):
-        for t in self.transforms:
-            image = t(image)
-        return image, target
-    
-def show_images(images, num_samples=40, cols=8):
-    plt.figure(figsize=(15, 15))
-    index = int(len(dataset) / num_samples)
+import numpy as np
+import math
 
-    print(images)
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    for i, img in enumerate(images):
-        if i % index == 0:
-            plt.subplot(int(num_samples / cols) + 1, cols, int(i / index) + 1)
-            plt.imshow(to_pil_image(img[0][0]))
+#####Hypreparameters#####
 
-dataset = OxfordIIITPet(root='.', download=True, transform=Compose(to_tensor))
-#show_images(dataset)
+max_iterations = 1000
+lr = 0.001
+
+bathc_size = 32
+patch_size = 4
+emb_size = 32
+n_layers = 6
+n_heads = 2
+output_dim = 37
+dropout = 0.1
+
+#########################
 
 class PatchEmbedding(nn.Module):
     def __init__(self, in_channels=3, patch_size=8, emb_size=128) -> None:
@@ -138,6 +131,29 @@ class Block(nn.Module):
         x = self.ffd(self.ln2(x)) + x
 
         return x
+
+class PositionalEncoding(nn.Module):
+    def __init__(self, max_seq: int, d_model: int) -> None:
+        self.max_seq = max_seq
+        self.d_model = d_model
+
+        position = torch.arange(self.max_seq, dtype=torch.float).unsqueeze(1)
+
+        even_i = torch.arange(0, self.d_model, 2, dtype=torch.float)
+        denominator = torch.pow(10000, even_i / self.d_model)
+
+        evenPE = torch.sin(position / denominator)
+        oddPE = torch.cos(position / denominator)
+
+        stacked_combo = torch.stack([evenPE, oddPE], dim=2)
+        positional_encoding = torch.flatten(stacked_combo, 1, 2)
+        positional_encoding = positional_encoding.unqueeze(0)
+        self.register_buffer('positional_encoding', positional_encoding)
+
+    def forward(self, x: Tensor) -> Tensor:
+        #Ensuring that the max_seq of the positional encoding matches with the input sequence length
+        x = x + self.positional_encoding[:, :x.shape[1], :].requires_grad_(False) 
+        return x
     
 class CustomViT(nn.Module):
     def __init__(self, embed_dim: int, n_heads: int, block_size: int, patch_size: int, n_layers: int, output_dim: int, input_dim: int, input_ch=3, dropout=0.0, encoder=True) -> None:
@@ -146,7 +162,9 @@ class CustomViT(nn.Module):
         self.num_patches = (input_dim // patch_size) ** 2
 
         self.patch_embedding = PatchEmbedding(input_ch, patch_size, embed_dim)
-        self.pos_embedding = nn.Parameter(torch.randn(1, self.num_patches + 1, embed_dim))
+        #self.pos_embedding = nn.Parameter(torch.randn(1, self.num_patches + 1, embed_dim))
+        self.pos_embedding = PositionalEncoding(self.num_patches + 1, embed_dim)
+
         self.cls_token = nn.Parameter(torch.randn(1, 1, embed_dim))
 
         self.sa = nn.Sequential(
@@ -165,9 +183,12 @@ class CustomViT(nn.Module):
 
         cls_tokens = repeat(self.cls_token, '1 1 d -> b 1 d', b = B)
         img_tokens = torch.cat([cls_tokens, img_tokens], dim=1)
-        position_embeddings = self.pos_embedding[:, :(T+1)]
+        
+        #position_embeddings = self.pos_embedding[:, :(T+1)]
+        #x = img_tokens + position_embeddings
 
-        x = img_tokens + position_embeddings
+        x = self.pos_embedding(img_tokens)
+        
         out = self.sa(x)
         out = self.cls_head(out[:, 0, :])
 
@@ -269,7 +290,8 @@ class ViT(nn.Module):
         self.num_patches = (img_size // patch_size) ** 2
 
         self.patch_embedding = PatchEmbedding(in_channels, patch_size, embed_dim)
-        self.pos_embedding = nn.Parameter(torch.randn(1, self.num_patches + 1, embed_dim)) ## +1 for the cls token
+        #self.pos_embedding = nn.Parameter(torch.randn(1, self.num_patches + 1, embed_dim)) ## +1 for the cls token
+        self.pos_embedding = PositionalEncoding(self.num_patches + 1, embed_dim)
         self.cls_token = nn.Parameter(torch.randn(1, 1, embed_dim))
         
         self.layers = nn.ModuleList([])
@@ -294,12 +316,51 @@ class ViT(nn.Module):
         cls_tokens = repeat(self.cls_token, '1 1 d -> b 1 d', b = B)
         img_tokens = torch.cat([cls_tokens, img_tokens], dim=1)
 
-        position_embeddings = self.pos_embedding[:, :(T+1)]
-
-        x = img_tokens + position_embeddings
+        #position_embeddings = self.pos_embedding[:, :(T+1)]
+        #x = img_tokens + position_embeddings
+        
+        x = self.pos_embedding(img_tokens)
 
         for i in range(self.n_layers):
             x = self.layers[i](x)
 
         out = self.cls_head(x[:,0,:])
         return out
+    
+model = ViT(in_channels=3, img_size=144, patch_size=4, embed_dim=32, n_layers=6, output_dim=37, dropout=0.1, heads=2)
+optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+loss = nn.CrossEntropyLoss()
+
+for epoch in range(max_iterations):
+    losses = []
+
+    model.train()
+
+    for step, (inputs, labels) in enumerate(train_dataloader):
+        inputs, labels = inputs.to(device), labels.to(device)
+        
+        optimizer.zero_grad()
+
+        outputs = model(inputs)
+
+        loss_val = loss(outputs, labels)
+        
+        loss_val.backward()
+        optimizer.step()
+
+        losses.append(loss_val.item())
+
+    if epoch % 5 == 0:
+        print(f"Epoch {epoch} -> Avg Train Loss: {np.mean(losses)}")
+
+        #Validation
+        model.eval()
+        with torch.no_grad():
+            val_losses = []
+
+            for step, (inputs, labels) in enumerate(test_dataloader):
+                inputs, labels = inputs.to(device), labels.to(device)
+                outputs = model(inputs)
+                val_losses.append(loss(outputs, labels).item())
+            
+            print(f"Epoch {epoch} -> Avg Validation Loss: {np.mean(val_losses)}")
