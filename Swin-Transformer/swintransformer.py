@@ -7,4 +7,4 @@ from torch import tensor
 from torch import optim
 
 class PatchMerging(nn.Module):
-    
+    pass
