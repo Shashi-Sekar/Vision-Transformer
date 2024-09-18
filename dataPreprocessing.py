@@ -15,9 +15,9 @@ class Compose(object):
     def __init__(self, transforms):
         self.transforms = transforms
     
-    def __call__(self, input):
+    def __call__(self, image):
         for t in self.transforms:
-            image = t(input)
+            image = t(image)
         return image
     
 def show_images(images, num_samples=40, cols=8):
@@ -44,12 +44,3 @@ train, test = random_split(dataset, [train_split, len(dataset) - train_split])
 
 train_dataloader = DataLoader(train, batch_size=32, shuffle=True)
 test_dataloader = DataLoader(test, batch_size=32, shuffle=True)
-
-count = 0
-
-for i, x in enumerate(train):
-    print(i, x[0].shape, type(x[1]))
-    break
-    count += 1
-
-print(f"Number of samples: {count}")

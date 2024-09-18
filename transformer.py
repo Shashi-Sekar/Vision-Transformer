@@ -44,7 +44,7 @@ class PatchEmbedding(nn.Module):
     def forward(self, x: Tensor) -> Tensor:
         return self.projection(x)
     
-sample_datapoint = torch.unsqueeze(dataset[0][0][0], 0)
+sample_datapoint = torch.unsqueeze(dataset[0][0], 0)
 print("Initial Shape: ", sample_datapoint.shape)
 
 embedding = PatchEmbedding()(sample_datapoint)
@@ -134,6 +134,7 @@ class Block(nn.Module):
 
 class PositionalEncoding(nn.Module):
     def __init__(self, max_seq: int, d_model: int) -> None:
+        super().__init__()
         self.max_seq = max_seq
         self.d_model = d_model
 
@@ -147,7 +148,7 @@ class PositionalEncoding(nn.Module):
 
         stacked_combo = torch.stack([evenPE, oddPE], dim=2)
         positional_encoding = torch.flatten(stacked_combo, 1, 2)
-        positional_encoding = positional_encoding.unqueeze(0)
+        positional_encoding = positional_encoding.unsqueeze(0)
         self.register_buffer('positional_encoding', positional_encoding)
 
     def forward(self, x: Tensor) -> Tensor:
@@ -330,6 +331,8 @@ class ViT(nn.Module):
 model = ViT(in_channels=3, img_size=144, patch_size=4, embed_dim=32, n_layers=6, output_dim=37, dropout=0.1, heads=2)
 optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
 loss = nn.CrossEntropyLoss()
+
+model.to(device)
 
 for epoch in range(max_iterations):
     losses = []
